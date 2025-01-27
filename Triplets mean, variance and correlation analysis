@@ -1,0 +1,317 @@
+## Do different members of the triplets have similar gene expression variance and
+similar means?
+df <- read.table("triplets_all_MV.txt", header=T) (see Triplets identification and analysis file)
+# Create comparison DataFrames for each TripletID
+create_comparison <- function(df, triplet_id) {
+  subset_df <- df[df$TripletID == triplet_id, ]
+
+  comparison_AB <- data.frame(
+    TripletID = triplet_id,
+    Gene1 = subset_df$Gene_A,
+    Gene2 = subset_df$Gene_B,
+    Mean_Gene1 = subset_df$Mean_GeneA,
+    Mean_Gene2 = subset_df$Mean_GeneB,
+    Var_Gene1 = subset_df$Var_GeneA,
+    Var_Gene2 = subset_df$Var_GeneB
+  )
+
+  comparison_AD <- data.frame(
+    TripletID = triplet_id,
+    Gene1 = subset_df$Gene_A,
+    Gene2 = subset_df$Gene_D,
+    Mean_Gene1 = subset_df$Mean_GeneA,
+    Mean_Gene2 = subset_df$Mean_GeneD,
+    Var_Gene1 = subset_df$Var_GeneA,
+    Var_Gene2 = subset_df$Var_GeneD
+  )
+
+  comparison_BD <- data.frame(
+    TripletID = triplet_id,
+    Gene1 = subset_df$Gene_B,
+    Gene2 = subset_df$Gene_D,
+    Mean_Gene1 = subset_df$Mean_GeneB,
+    Mean_Gene2 = subset_df$Mean_GeneD,
+    Var_Gene1 = subset_df$Var_GeneB,
+    Var_Gene2 = subset_df$Var_GeneD
+  )
+
+  return(rbind(comparison_AB, comparison_AD, comparison_BD))
+}
+
+# Get unique TripletIDs
+triplet_ids <- unique(df$TripletID)
+
+# Create a list to store the comparison dataframes for each TripletID
+comparison_dfs <- lapply(triplet_ids, function(id) create_comparison(df, id))
+#function(id) defines an inline function that takes a single argument id. It is called for each element of the vector triplet_ids.The lapply function applies this function to every element of triplet_ids, returning a list of DataFrames, each corresponding to a unique TripletID.
+
+# Combine the comparison dataframes
+final_df <- do.call(rbind, comparison_dfs)
+new_cols <- data.frame(NG_1 = rep(394, nrow(final_df)),NG_2 = rep(394, nrow(final_df)))
+triplets <- cbind(final_df, new_cols)
+fwrite(triplets,file = "triplets_comparing_genes.txt", sep="\t")
+
+# Adding pvar, pmean and cor columns
+library(data.table)
+df <- fread("triplets_comparing_genes.txt", header = TRUE)
+## Two-tailed PVar (P-value)
+df$PVar <- apply(df, 1, function(row) {
+  f_ratio <- as.numeric(row["Var_Gene1"]) / as.numeric(row["Var_Gene2"])
+  df1 <- as.numeric(row["NG_1"])
+  df2 <- as.numeric(row["NG_2"])
+  2 * min(pf(f_ratio, df1, df2, lower.tail = TRUE), pf(f_ratio, df1, df2, lower.tail = FALSE))
+})
+#The two-tailed P-value is calculated by taking the minimum of these two tail probabilities and multiplying by 2
+
+#P Mean (t-test for means):
+Uses the cumulative distribution function for the t-distribution (pt()) to find the two-tailed p-value.
+df$PMean <- apply(df, 1, function(row) {
+  mean1 <- as.numeric(row["Mean_Gene1"])
+  mean2 <- as.numeric(row["Mean_Gene2"])
+  var1 <- as.numeric(row["Var_Gene1"])
+  var2 <- as.numeric(row["Var_Gene2"])
+  n1 <- as.numeric(row["NG_1"])
+  n2 <- as.numeric(row["NG_2"])
+
+  # t-test p-value for comparing two means
+  t_stat <- (mean1 - mean2) / sqrt((var1 / n1) + (var2 / n2))
+  df_total <- n1 + n2 - 2
+  2 * pt(-abs(t_stat), df_total)
+})
+#df_total- degree of fredom
+#-abs(t_stat): Computes the negative absolute value of the t-statistic.
+We use the absolute value to handle both tails (positive and negative differences)
+
+fwrite(df, "comparison_within_triplets.txt", sep = "\t")
+
+# Correlation between gene-pairs
+cut -f1,2,3 triplets_comparing_genes.txt > genepairs_triplets.txt
+library(dplyr)
+library(tidyr)
+gene_pairs <- read.table("genepairs_triplets.txt", header=T)
+gene_expression <- read.table("tmm_ematrix_filtered.txt", header=T)
+
+# Transpose expression data for correlation analysis
+ gene_expression <- gene_expression %>%
+  tidyr::gather(key = "sample", value = "expression", -geneid) %>%
+  tidyr::spread(key = "geneid", value = "expression")
+
+  # Convert from a wide format (one gene per row, many samples as columns) to a long format (one row per gene-sample combination).
+
+  # Initialize an empty data frame to store correlation results
+cor_results <- data.frame(TripletID = integer(), Gene1 = character(), Gene2 = character(), Correlation = numeric())
+
+# Loop through each row of gene_pairs
+for (i in 1:nrow(gene_pairs)) {
+  gene1 <- gene_pairs$Gene1[i]
+  gene2 <- gene_pairs$Gene2[i]
+
+# Extract expression data for the two genes
+  gene1_expression <- gene_expression[[gene1]]
+  gene2_expression <- gene_expression[[gene2]]
+
+# Check if both genes have expression data
+  if (!is.null(gene1_expression) & !is.null(gene2_expression)) {
+# Calculate correlation
+    correlation <- cor(gene1_expression, gene2_expression, method = "pearson", use = "complete.obs")
+
+    # Append results
+        cor_results <- rbind(cor_results, data.frame(
+          TripletID = gene_pairs$TripletID[i],
+          Gene1 = gene1,
+          Gene2 = gene2,
+          Correlation = correlation
+        ))
+      }
+    }
+
+#join the cor column with comparison file
+library(dplyr)
+data2 <- read.table("comparison_within_triplets.txt", header = T)
+output_data <- data2 %>%
+  left_join(cor_results, by = c("TripletID", "Gene1", "Gene2"))
+
+fwrite(output_data, "all_comparison_within_triplets.txt", sep = "\t")
+
+## From this table, we can ask, do the variances of the genes differ between
+the A, B, and D genomes?
+library(dplyr)
+df <- read.table("all_comparison_within_triplets.txt",header=T)
+# Function to extract genome identifier from gene name
+extract_genome <- function(gene) {
+  # Check if gene follows the expected format
+  match <- regexpr("TraesCS[0-9][A-Z]", gene)
+  if (match > 0) {
+    substr(gene, match + 8, match + 8)  # Extract the letter at the correct position
+  } else {
+    NA  # Return NA if the format doesn't match
+  }
+}
+
+# Apply the function to Gene1 and Gene2
+df$Genome_Gene1 <- sapply(df$Gene1, extract_genome)
+df$Genome_Gene2 <- sapply(df$Gene2, extract_genome)
+# Create a column for genome pairs (e.g., "A-B")
+df$Genome_Pair <- paste(df$Genome_Gene1, df$Genome_Gene2, sep = "-")
+
+# Function to classify triplet
+classify_triplet <- function(triplet_data) {
+  # Initialize p-values
+  p_AB <- p_AD <- p_BD <- 1
+
+  # Loop through each row in the triplet data
+  for (i in 1:nrow(triplet_data)) {
+    pair <- triplet_data$Genome_Pair[i]
+    p_value <- triplet_data$PVar[i]
+
+    # Assign p-values based on genome pairs
+        if (pair %in% c("A-B", "B-A")) {
+          p_AB <- p_value
+        } else if (pair %in% c("A-D", "D-A")) {
+          p_AD <- p_value
+        } else if (pair %in% c("B-D", "D-B")) {
+          p_BD <- p_value
+        }
+      }
+      # Classify based on p-values
+        if (p_AB < 0.05 & p_AD < 0.05 & p_BD < 0.05) {
+          return("ABD_different")
+        } else if (p_AB < 0.05 & p_AD < 0.05 & p_BD >= 0.05) {
+          return("BD_same")
+        } else if (p_AB < 0.05 & p_AD >= 0.05 & p_BD < 0.05) {
+          return("AD_same")
+        } else if (p_AB >= 0.05 & p_AD < 0.05 & p_BD < 0.05) {
+          return("AB_same")
+        } else if (p_AB >= 0.05 & p_AD >= 0.05 & p_BD >= 0.05) {
+          return("ABD_same")
+        } else {
+          return("Other")
+        }
+      }
+
+# Apply the classification to each triplet
+  triplet_classification <- df %>%
+      group_by(TripletID) %>%
+      do(data.frame(Classification = classify_triplet(.)))
+
+# Summarize counts
+  classification_counts <- triplet_classification %>%
+      group_by(Classification) %>%
+      summarise(Count = n())
+write.table(classification_counts, "classification_counts.txt", row.names = FALSE,sep="\t")
+
+#ploting the classification of triplets
+triplet_class<- read.table("classification_counts.txt", header =T)
+par(mar = c(8, 5, 4, 2))  # Adjust margins
+bar_positions <- barplot(
+  height = triplet_class$Count,
+  names.arg = triplet_class$Classification,
+  main = "Classification of Triplets Based on Variance",
+  ylab = "Number of Triplets",
+  #xlab = "Classification",
+  col = "skyblue",
+  las = 2,             # Perpendicular labels
+  cex.names = 0.8      # Reduce label size
+)
+
+# Add a solid black line under the bars (x-axis)
+abline(h = 0, col = "black", lwd = 2)  # y = 0 is the base of the bars
+# Add the x-axis label below the names.arg labels
+mtext("Classification", side = 1, line = 5, cex = 1.2)  # Adjust line and size
+
+## Cor analysis
+triplets <-read.table("all_comparison_within_triplets.txt",header = T)
+# Histogram of overall correlations
+hist(triplets$Correlation,
+     main = "Histogram of Correlations (overall)",
+     xlab = "Correlation",
+     col = "skyblue",
+     border = "black")
+
+# correlations for A-B, A-D, and B-D
+# Function to extract genome identifier from gene name
+extract_genome <- function(gene) {
+ # Check if gene follows the expected format
+  match <- regexpr("TraesCS[0-9][A-Z]", gene)
+       if (match > 0) {
+         substr(gene, match + 8, match + 8)  # Extract the letter at the correct position
+       } else {
+         NA  # Return NA if the format doesn't match
+       }
+     }
+
+# Apply the function to Gene1 and Gene2
+triplets$Genome_Gene1 <- sapply(triplets$Gene1, extract_genome)
+triplets$Genome_Gene2 <- sapply(triplets$Gene2, extract_genome)
+
+AB_data <- triplets[triplets$Genome_Gene1 == "A" & triplets$Genome_Gene2 == "B", ]
+AD_data <- triplets[triplets$Genome_Gene1 == "A" & triplets$Genome_Gene2 == "D", ]
+BD_data <- triplets[triplets$Genome_Gene1 == "B" & triplets$Genome_Gene2 == "D", ]
+
+
+# Create density plots for each pair
+AB_density <- density(AB_data$Correlation)
+AD_density <- density(AD_data$Correlation)
+BD_density <- density(BD_data$Correlation)
+
+# Plot the densities on the same plot
+  plot(AB_density,
+      main = "Density of Correlations Across Genome Pairs",
+      xlab = "Correlation",
+      ylab = "Density",
+      col = "blue",
+      lwd = 2,
+      ylim = c(0, max(AB_density$y, AD_density$y, BD_density$y)))  # Set y-limit to max density
+     lines(AD_density, col = "green", lwd = 2)  # Add A-D density
+     lines(BD_density, col = "red", lwd = 2)    # Add B-D density
+
+     # Add legend to identify genome pairs
+     legend("topleft",
+            legend = c("A-B", "A-D", "B-D"),
+            col = c("blue", "green", "red"),
+            lwd = 2)
+
+
+#Finally, the idea behind comparing means is to investigate homeologous expression across the triplets. Is there expression biase.g. one homeolog is higher or lower than the others?
+# Categorize Triplets Based on Homeolog Differences
+  triplets$Differ <- apply(triplets, 1, function(row) {
+              if (row["PMean"] < 0.05) {
+                return(1)  # Pair differs
+              } else {
+                return(0)  # Pair does not differ
+              }
+            })
+  library(dplyr)
+  # Group by TripletID to summarize results
+  triplet_summary <- triplets %>%
+              group_by(TripletID) %>%
+              summarise(
+                Num_Diff_Pairs = sum(Differ),  # Count number of differing pairs
+                Total_Pairs = n()
+              )
+
+# Categorize based on the number of differing pairs
+  triplet_summary$Category <- case_when(
+              triplet_summary$Num_Diff_Pairs == 0 ~ "None",
+              triplet_summary$Num_Diff_Pairs == 1 ~ "One pair",
+              triplet_summary$Num_Diff_Pairs == 2 ~ "Two pairs",
+              triplet_summary$Num_Diff_Pairs == 3 ~ "All Three pairs"
+            )
+
+# Count the number of triplets in each category
+category_counts <- table(triplet_summary$Category)
+# Convert to a data frame for plotting
+category_counts_df <- as.data.frame(category_counts)
+colnames(category_counts_df) <- c("Category", "Count")
+library(ggplot2)
+ggplot(category_counts_df, aes(x = Category, y = Count, fill = Category)) +
+              geom_bar(stat = "identity", color = "black") +
+              labs(
+                title = "Count of Triplets with Differing Homeolog Pairs",
+                x = "Category",
+                y = "Number of Triplets"
+              ) +
+              scale_fill_brewer(palette = "Set3") +
+              theme_minimal()
+
+              
