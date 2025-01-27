@@ -1,0 +1,103 @@
+## Triplet identification using bash and R
+homeologous gene files downloaded from
+https://wheat-urgi.versailles.inrae.fr/Seq-Repository/Annotations, unser the file name iwgsc_refseqv1.0_PGSB_annotation_files.zip
+
+# They used annotation version 1, so their version code is 01. In my case, I used annotation version 1.1, so my version code is 02. However, the six-digit numbers after the version code did not change, so I changed my version code to 01 (iwgsc_refseqv1_READme.pdf).
+ cut -f2,3,4,9,10,11 homeologous_gene_groups.txt > modified_homeologous_genes.txt
+
+#extracting only the high quality genes
+grep HC-only modified_homeologous_genes.txt > hq_homeologous_genes.txt
+
+# Replacing version code in geneid file (see Gene expression analysis file)
+sed 's/02G/01G/g' geneid.txt > modified_geneversion.txt
+# used a python script (match_genes.py) to find the matched genes.
+python3 match_genes.py
+# Results stored in matched_genes.txt file.
+## Cut the necessary columns
+cut -f1,2,3,4 matched_genes.txt| sort -u > filtered_genes.txt
+
+# Collect only those genes that are present in the A, B, and D sub-genome as a single copy
+grep 1:1:1 filtered_genes.txt > 1_1_1.txt
+
+## Merging triplets with mean_variance file
+# changed the version code again otherwise it would not match.
+sed 's/01G/02G/g' 1_1_1.txt > modified_111.txt
+triplet_data <- fread("modified_111.txt")
+triplet_data <-triplet_data[, c(1,2,3)]
+# Add column names
+setnames(triplet_data, c("Gene_1", "Gene_2", "Gene_3"))
+# Add unique TripletID to check who belong to which triplet
+triplet_data[, TripletID := 1:.N]
+
+# Reshape to long format
+triplets_long <- melt(triplet_data, measure.vars = c("Gene_1", "Gene_2", "Gene_3"),
+                      variable.name = "Gene_Type", value.name = "GeneIds")
+#Melting" data refers to the process of transforming it from a "wide" format to a "long" format
+
+fwrite(triplets_long, "triplets_long.txt",sep="\t")
+mean_var_data <- read.table("genes_mean_var.txt", header=T) (see Gene expression analysis file)
+
+# Merge and calculate mean & variance for each gene in triplet
+merged_data <- triplets_long[mean_var_data, on = "GeneIds", nomatch = 0]
+
+# Include Gene_1, Gene_2, Gene_3 from original triplet_data
+result <- merged_data[triplet_data, on = "TripletID"][
+    , .(Mean = Mean[match(Gene_Type, c("Gene_1", "Gene_2", "Gene_3"))],
+        Var = Variance[match(Gene_Type, c("Gene_1", "Gene_2", "Gene_3"))],
+        Gene_Type), by = .(TripletID, Gene_1, Gene_2, Gene_3)]
+
+# Groups the data by TripletID and the three gene columns.Within each group, it finds the mean value (Mean) for observations where the Gene_Type matches one of the specified gene.
+
+# Pivot to wider format to get individual mean and variance columns
+result_wide <- dcast(result, TripletID + Gene_1 + Gene_2 + Gene_3 ~ Gene_Type, value.var = c("Mean", "Var"))
+fwrite(result_wide, "triplets_all_MV.txt",sep="\t")
+
+## Finding overall pi per triplets
+pi_allgenes <-fread("pi_all_genes.txt") (see Checking nucleotide diversity file)
+pi_allgenes <- pi_allgenes[,c(1,5)]
+
+# Merge pi for each gene in triplet
+merged_data <- triplets_long[pi_allgenes, on = "GeneIds ", nomatch = 0]
+setnames(merged_data, "Overall_PI", "Seq_Diversity")
+
+# Reshape the data by TripletID
+output_data <- merged_data[, .(
+  GeneIds = list(GeneIds),               # List all GeneIds for each TripletID
+  Gene_Type = list(Gene_Type),           # List all Gene_Type for each TripletID
+  Seq_Diversity = list(Seq_Diversity)    # List all Seq_Diversity for each TripletID
+), by = .(TripletID)]
+
+# Unlisting these columns so that all values under the same TripletID are displayed in rows, one after another
+output_data <- output_data[, .(
+  GeneIds = unlist(GeneIds),
+  Gene_Type = unlist(Gene_Type),
+  Seq_Diversity = unlist(Seq_Diversity)
+), by = TripletID]
+
+fwrite(output_data, "triplets_seq_diversity.txt",sep="\t")
+
+# Count the number of Gene_Type entries for each TripletID
+gene_count <- output_data[, .N, by = TripletID]
+
+# Some triplets contained only one or two copies of homeologous genes, so i filtered out them and keep the triplets which has all the three copies.
+valid_triplet_ids <- gene_count[N == 3, TripletID]
+# Filter the original dataset based on valid TripletIDs
+filtered_data <- output_data[TripletID %in% valid_triplet_ids]
+fwrite(filtered_data, "triplets_filtered_seq_diversity.txt",sep="\t")
+
+# Combine variance and pi for triplets
+library(data.table)
+file1 <- fread("triplets_filtered_seq_diversity.txt",sep="\t")
+file2 <- fread("triplets_long_MV.txt", sep="\t")
+Rearrange the column in file2
+setorder(file2, TripletID, Gene_Type)
+## Merge the two files on TripletID and GeneIds
+merged_data <- merge(
+  file1[, .(TripletID, GeneIds, Seq_Diversity)], # Select only required columns from file1
+  file2[, .(TripletID, GeneIds, Variance)],     # Select only required columns from file2
+  by = c("TripletID", "GeneIds")                # Merge on TripletID and GeneIds
+)
+
+# Rename Variance to Expression_Diversity
+setnames(merged_data, "Variance", "Expression_Diversity")
+fwrite(merged_data, "triplets_Exp_seq_diversity.txt", sep="\t")

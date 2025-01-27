@@ -1,0 +1,41 @@
+## Making per site nucleotide diversity using the merged vcf file
+vcftools --vcf filename.vcf --site-pi --out all_samples
+
+## Making snpid for the output file
+n_diversity <- read.table("all_samples.sites.pi", header =T)
+n_diversity <- n_diversity %>% mutate(SNPIDs = paste0(CHROM, POS))
+#for each row, mutate will create a new value for snpid by combining the CHROM and POS values
+write.table(n_diversity, 'n_diversity.txt', row.names = FALSE, sep = "\t")
+
+#finding overall pi for all the expressed genes using R
+library(tidyr)
+df1 <- read.table("n_diversity.txt", header = TRUE, sep = "\t")
+df2 <-read.table("processed_snps.txt", header=T, sep = "\t")
+# Preparation of the above file is written in the Analysis of variants file.
+# Create a lookup table for PI values
+pi_lookup <- setNames(df1$PI, df1$SNPIDs)
+
+# Function to calculate mean PI
+mean_pi <- function(pis) {
+  if (all(is.na(pis))) {
+    return(NA)
+  } else {
+    return(mean(pis, na.rm = TRUE))
+  }
+} #mean_pi calculates the mean of a vector pis
+
+# Split SNP IDs, find PIs, and calculate mean PI per gene
+df2$All_PIs <- sapply(strsplit(df2$SNPIDs, " "), function(snp_ids) {
+  pis <- pi_lookup[snp_ids]
+  paste(pis[!is.na(pis)], collapse = " ")
+})
+
+df2$Overall_PI <- sapply(strsplit(df2$SNPIDs, " "), function(snp_ids) {
+  pis <- pi_lookup[snp_ids]
+  mean_pi(pis)
+})
+#calculate mean of pi per gene.
+library(data.table)
+fwrite(df2, file="pi_all_genes.txt", sep = "\t")
+
+#

@@ -1,0 +1,24 @@
+## Variant calling
+# Indexing the reference genome
+samtools faidx Triticum_aestivum.IWGSC.dna.toplevel.fa
+bcftools mpileup -Ou -f ../reference_genome/Triticum_aestivum.IWGSC.dna.toplevel.fa  input.bam | bcftools call -Ov -mv | bcftools filter -e '%QUAL < 20 || DP < 5' > ../vcf_files/out.vcf
+
+#f= faidx-indexed reference file in the FASTA format, Ou= output uncompressed BCF, Ov=uncompressed VCF, mv= multiallelic variant site, e=exclude.
+-mv: Activates multiallelic and rare-variant calling.
+
+## Removing INDELs:
+vcftools --vcf input.vcf --remove-indels --recode --recode-INFO-all --out SNPs_only.filename.vcf
+
+## Removing SNPs from unknown regions (only 21 chromosomes):
+bcftools view input.vcf.gz --regions 1A,1B,1D,2A,2B,2D,3A,3B,3D,4A,4B,4D,5A,5B,5D,6A,6B,6D,7A,7B,7D > out.vcf
+
+## Merging the vcf files:
+First, make gz files and then make a txt file.
+ls *vcf.gz > snps_files.txt
+bcftools merge -l filename.txt -Oz -o filename.vcf.gz
+
+## Replace missing genotypes with the reference allele
+bcftools +missing2ref filename.vcf.gz | bcftools annotate -x FORMAT/PL -o filename.vcf
+
+## SNP effect prediction
+./vep -i filename.vcf  -o annotation_snps.txt --species triticum_aestivum --cache --dir_cache ./ --cache_version 60 --offline

@@ -1,0 +1,80 @@
+## Moved the merged vcf file into ped format
+plink --vcf filename.vcf --double-id --allow-extra-chr --recode --out genotypes_pformat
+less -S genotypes_pformat.ped
+# change the family id.
+less genotypes_pformat.ped | cut -f1,2 > familyid.txt
+awk '{print $1, $2, NR, $2}' familyid.txt > changedid.txt
+plink --file genotypes_pformat --update-ids changedid.txt --make-bed --allow-extra-chr --out finalpformat_allsnps
+
+## Remove identical individuals with plink2
+PLINK 2 includes an implementation of the KING-robustpairwise relatedness estimator, which can be used to prune all related pairs. For example, to
+get rid of all first-degree relations (parent–child and sibling–sibling).
+plink2 --bfile finalpf_allsnps --king-cutoff 0.177  --allow-extra-chr --make-bed --out prunedfirst_de_data
+
+## maf counting
+plink --bfile prunedfirst_de_data --maf 0.1 --allow-extra-chr --recode --out maf0.1_snps
+
+#map file should to be processed to include the snp identifier.
+cp maf0.1_snps.map snps_withoutidentifier.map
+awk '$2=="."{$2=$1$4} {print $1 "\t" $2 "\t" $3 "\t" $4}' snps_withoutidentifier.map > maf0.1_snps.map
+
+## LD pruning
+I used a window size is 100Kb, step 1 and pairwise r2
+threshold is 0.8 which means remove one of a pair of SNPs if the LD is greater than 0.8.
+plink --bfile maf0.1_snps --indep-pairwise 100 kb 1 0.8 --allow-extra-chr --out ld_pruning.genotypes
+
+#Extract the pruned SNPs
+plink --file maf0.1_snps --allow-extra-chr --exclude ld_pruning.genotypes.prune.out --make-bed --out final_ldpruned-snps
+
+## Observe heterozygosity
+plink --bfile final_ldpruned-snps --het --out homo_results
+
+## Principal component analysis using smartpca
+# Making bed to ped file
+plink --bfile final_ldpruned-snps --allow-extra-chr --recode --out snpsfile
+
+#To generate the “.pedind” file,  cut the first six columns of the “.ped” file
+cat snpsfile.ped | cut -d ' ' -f1-6 > filename
+smartpca -p smartpca.par > smartpca.logout
+
+#ped to vcf
+plink --bfile final_ldpruned-snps --recode vcf-iid --allow-extra-chr --out Snps_finalformat
+
+#012 format
+vcftools --vcf Snps_finalformat.vcf --012 --out output
+
+# Preparing the ouput file for matrix-eQTL
+#make table from 012 matrix filebusing R
+df <- t(read.table("output.012", header=FALSE))
+table <- df[-1, ] (deleting the first row, first row should be snp like 0, 1,2)
+write.table(table, "snps_012format")
+#load snps information
+snps <- read.table("snps_012format")
+indivduals <- read.table("output.012.indv")
+positions <- read.table("output.012.pos")
+
+#add col names
+colnames(snps) <- indivduals[,1]
+#add row names
+rownames(snps)<-paste(positions[,1],positions[,2],sep=':')
+library(tidyverse)
+snps2 <- snps
+#change column name
+ colnames(snps2) <- lapply(colnames(snps2), function(input){
+   sub("md_out\\.(w[[:digit:]]+).+", "\\1", input) })
+column_names <- names(snps2)
+column_numbers <- as.integer(gsub("[^0-9]", "", column_names))
+column_names_sorted <- column_names[order(column_numbers)]
+final_snpslist <- snps2[, column_names_sorted]
+write.csv(final_snpslist, file="snpslist_012.csv")
+snps3 <- read.csv("snpslist_012.csv")
+#rename column
+names(snps3)[names(snps3) == "X"] <- "snpid"
+write.table(snps3, file="final_snpslist_012.txt", sep = "\t", row.names=F)
+
+#making snp location file for matrix-eQTL
+snps_name <- snps3$snpid
+snps_location <- cbind(snps_name, positions)
+col_names <- c("snpid", "chr", "pos")
+colnames(snps_location) <- col_names
+write.table(snps_location, "final_snps_position.txt", sep = "\t", row.names=F)

@@ -1,0 +1,39 @@
+#Preprocessing the dataset using fastp:
+fastp -i filename_1.fq.gz -I filename_2.fq.gz --detect_adapter_for_pe -q 33 -n 0 -l 75 -y -c -h ./out.html -w 8 -o file1.fq.gz -O file2.fq.gz
+#q= quality for base qualified, l= minimum length requirement, y= Low complexity filter, n= number of N base, c= base correction in overlapped regions.
+
+## Indexing the reference genome using STAR:
+STAR --runThreadN 32 --runMode genomeGenerate --genomeDir ../ensembl_ref/ensembl_ref_index --limitGenomeGenerateRAM 300000000000 --genomeFastaFiles ../genome/Triticum_aestivum.IWGSC.dna.toplevel.fa --sjdbGTFfile ../annotation_file/Triticum_aestivum.IWGSC.47.gtf --sjdbOverhang 148
+
+#sjdbOverhang = the length of genomic sequence used to construct splice junction database.
+
+## First pass mapping:
+STAR --runThreadN 30 --genomeDir ../ensembl_ref/ensembl_ref_index --readFilesIn file1 file2 --limitBAMsortRAM 300000000000 --outSAMtype None --outFilterMismatchNmax 3 --readFilesCommand zcat --outFileNamePrefix ../dataset/raw_data_1/first_pass/filename --outFilterScoreMinOverLread 0.66 --outFilterMatchNminOverLread 0.66 --outReadsUnmapped Fastx
+#Default scores were used.
+
+## Filtering splice junctions:
+cat *.tab | awk '$1 ~ /[1-7][ABD]/ && $5 > 0 && $7 > 2 && $6==0' | cut -f1-6 | sort | uniq > sj_filtered.tab
+
+#Removed all junctions mapping to chrM and non-chromosomal contigs ([1-7][ABD]), kept only the unannotated regions( column 6==0), removed intron motif from the splice junctions (column 5 > 0) and allowed greater than two unique reads crossing the junctions (column 7 > 2).
+
+## Reindexing the reference genome:
+STAR --runThreadN 32 --runMode genomeGenerate --genomeDir ../Regenerate_genome/SJ_index --limitGenomeGenerateRAM 300000000000 --genomeChrBinNbits 14 --genomeFastaFiles ../genome/Triticum_aestivum.IWGSC.dna.toplevel.fa --sjdbGTFfile ../annotation_file/Triticum_aestivum.IWGSC.47.gtf --sjdbFileChrStartEnd ./splice_junctions/sj_filtered.tab --sjdbOverhang 148
+## Second pass mapping:
+STAR --runThreadN 32 --genomeDir ../Regenerate_genome/SJ_index --readFilesIn file1 file2 --limitBAMsortRAM 300000000000 --outSAMtype BAM SortedByCoordinate --outFilterMismatchNmax 3 --readFilesCommand zcat --outFileNamePrefix ../dataset/raw_data_1/second_pass/filename --outFilterScoreMinOverLread 0.66 --outFilterMatchNminOverLread 0.66 --outReadsUnmapped Fastx --outSAMstrandField intronMotif
+
+#outSAMstrandField intronMotif = add XS tag.
+
+## Remove duplicates and find unique mapping files:
+samtools view -h -q255 -f 0x2 filename.bam -o ../dataset/uniquely_mapping_files/filename
+ # h includes a header in the output, f 0x2 is used for properly aligned paired-end read,
+  and mapping quality 255 means no filtering is used.
+
+java -Xmx20g -jar $EBROOTPICARD/picard.jar MarkDuplicates MAX_RECORDS_IN_RAM=20000000 \
+      I=input.bam \
+      O=../dataset/marked_duplicates/filename \
+      REMOVE_DUPLICATES=true \
+      M=../dataset/marked_duplicates/filename
+
+## Sorting and indexing the bam files
+samtools sort input.bam -o output.bam
+samtools index -c .bam

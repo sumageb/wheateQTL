@@ -1,0 +1,67 @@
+## Counting SNP in all the expressed genes
+awk '{print $1 "\t" $2 "\t" $3 "\t" $4 "\t" $7}' annotation_snps.txt> modified_vep_results.txt
+#filter the output file based on expressed gene list (for the preparation of expressed genelist, see Gene expression analysis file)
+file1 <- read.table("geneid.txt", header=T)
+file2 <- read.table("modified_vep_results.txt", header=T)
+f_annofile <- file2[file2$Gene %in% file1$geneid, ]
+fwrite(f_annofile, file="filtered_annotation.txt",sep="\t")
+
+#finding snps number in all the genes
+cut -f1,4 filtered_annotation.txt | sort -u > all_genes.txt
+library(dplyr)
+all_data <- read.delim("all_genes.txt", header = FALSE, col.names = c("snpid", "geneid"))
+# Process the data
+result <- all_data %>%
+  group_by(geneid) %>%
+  summarize(
+    SNPIDs = paste(snpid, collapse = " "),
+    SNPcount= n()
+  ) %>%
+  rename(GeneIds = geneid)
+  dim(result)
+  18240     3
+write.table(result, "allgenes_snpcount.txt", row.names = F, sep = "\t")
+
+# Formating the snpsid column
+awk '{gsub(/_[A-Z0-9]+\/[A-Z0-9\/]*/, "", $0);gsub(/_/, "", $0);}1' allgenes_snpcount.txt > processed_snps.txt
+## Finding synonymous and missense variants
+grep synonymous_variant modified_vep_results.txt | uniq > synonymous_variant.txt
+grep missense_variant modified_vep_results.txt | uniq > missense_variant.txt
+
+#cutting the snpsid column
+cut -f2 synonymous_variant.txt| uniq > modified_synonymous.txt
+cut -f2 missense_variant.txt | uniq > modified_missense.txt
+# Formating the column
+sed 's/://' modified_synonymous.txt > mod2_synonymous.txt
+(echo "SNPIDs"; cat mod2_synonymous.txt) > mod3_synonymous.txt
+sed 's/://' modified_missense.txt > mod2_missense.txt
+(echo "SNPIDs"; cat mod2_missense.txt) > mod3_missense.txt
+
+#We may want to check on the relationships between diversity and snp
+counts with snp effect “snp level” e.g.missense snps presumably will have lower pi values than synonymous snps
+ as can be show in t.test.
+df1 <- read.table("n_diversity.txt", header = TRUE)
+# Preparing of the n-diversity.txt file is written in the Checking nucleotide diversity file.
+df2 <- read.table("mod3_synonymous.txt", header = TRUE)
+merged_data <- merge(df2, df1, by = "SNPIDs", all.x = TRUE)
+#merging two files based on snpid.
+final_result <- merged_data[, c("SNPIDs", "PI")]
+fwrite(final_result, "synonymous_pi.txt", sep = "\t")
+
+# Same process was followed for the missense file.
+# Perform a two-sample t-test to determine if there's a difference in mean PI
+t_test_result <- t.test(missense$PI, synonymous$PI, alternative = "two.sided")
+
+# Extract the mean PI values for plotting
+mean_missense <- mean(missense$PI, na.rm = TRUE)
+mean_synonymous <- mean(synonymous$PI, na.rm = TRUE)
+
+# Create a vector of means with descriptive names
+mean_values <- c(Missense = mean_missense, Synonymous = mean_synonymous)
+
+# Create a simple bar chart to compare the means
+barplot(mean_values,
+              col = c("steelblue", "tomato"),
+              main = "Mean PI for Missense vs Synonymous SNPs",
+              ylab = "Mean PI",
+              ylim = c(0, 0.12))

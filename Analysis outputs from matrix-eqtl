@@ -1,0 +1,78 @@
+## Finding the number of cis and trans eqtl using R
+load("meqtl.Rdata")
+## Finding best p values for the identification of cis and trans
+matrix_eqtl$cis$ntests
+matrix_eqtl$trans$ntests
+# Number of tests were used to decide the p values for both cis and trans and run the matrix_eqtl.R script again after changing the p values.
+cis <- matrix_eqtl$cis$eqtls
+trans <- matrix_eqtl$trans$eqtls
+library(data.table)
+fwrite(cis, file="cis_eqtl.txt",sep="\t")
+fwrite(trans, file="trans_eqtl.txt",sep="\t")
+
+## LD pruning in the cis and trans eqtl files
+Using the original Snps_finalformat.vcf file, I compared it with the cis and trans eQTL files. I extracted only those SNP IDs that are present in both the cis and trans files and then performed linkage disequilibrium analysis again.
+# Extract SNP IDs from TXT file, convert to VCF-like format
+awk '{gsub(":","",$1); print $1}' cis_eqtl.txt > snps_cis.txt
+#This command removes the colon character from the first column.
+
+# Used bcftools to filter vcf based on the extracted SNPs
+bcftools view -i 'ID=@snps_cis.txt' Snps_finalformat.vcf > filtered_cis.vcf
+
+# Same process was followed for the trans file.
+#vcf to ped format (see file Preparing the vcf file for eqtl study)
+
+# ld pruning
+plink --file all_geno_cis --indep-pairwise 100000 kb 1 0.2 --allow-extra-chr --out ld_pruning_cis
+plink --file all_geno_cis --allow-extra-chr --exclude ld_pruning_cis.prune.out --make-bed --out final_ldpruned_cis
+
+# same process was followed for trans.
+#bed to vcf
+plink --bfile final_ldpruned-cis --recode vcf --allow-extra-chr --out cis_snps
+
+# Cutting the snpid column
+grep -v '^##' cis_snps.vcf | cut -f3 > cis_final_snpslist.txt
+grep -v '^##' trans_snps.vcf | cut -f3 > trans_final_snpslist.txt
+
+# Filtering cis and trans eqtl files based on ld results
+library(data.table)
+df1 <- read.table("cis_eqtl.txt", header = T, sep = "\t")
+df2 <- read.table("cis_final_snpslist.txt", header = F, col.names = "snps")
+df1$snps <- gsub(":", "", df1$snps)
+filtered_df <- df1[df1$snps %in% df2$snps, ]
+#filtered_df contain all rows from df1 whose snps values also exist in df2$snps
+fwrite(filtered_df, file="ld_filtered_cis.txt", sep = "\t")
+
+# same process was followed for trans
+fwrite(filtered_df, file="ld_filtered_trans.txt", sep = "\t")
+
+# Appling he et al, 2022 approached where gene and snp present in different chromosome, considerate as trans eQTL
+file <- read.table("ld_filtered_trans.txt", header=T, sep= "\t")
+file$SNP_chr <- substring(file$snps, 1, 2)
+#Extract the chromosome from the snps column.
+
+file$Gene_chr <- substring(sub("TraesCS", "", file$GeneIds), 1, 2)
+# Extract the chromosome from the GeneIds column.
+
+#Filter out rows where SNP_chr == Gene_chr
+df_filtered <- file[file$SNP_chr != file$Gene_chr, ]
+fwrite(df_filtered, file="final_trans_eqtl.txt", sep="\t")
+
+# Find common snps in both cis and trans eqtl
+df1 <- read.table("ld_filtered_cis.txt", header = TRUE, sep = "\t")
+df2 <- read.table("final_trans_eqtl.txt", header = TRUE, sep = "\t")
+common_rows <- merge(df1, df2, by = "snps")
+
+#Find how many triplets are present in the trans eqtl?
+library(data.table)
+file1 <- fread("final_trans_eqtl.txt")
+file2 <- fread("triplets_long.txt")
+common_genes <- merge(
+  file1[, .(snps, GeneIds)],  # Select only required columns from File 1
+  file2[, .(TripletID, GeneIds)],  # Select only required columns from File 2
+  by = "GeneIds")
+
+# Count unique TripletIDs
+triplet_counts <- common_genes[, .N, by = TripletID]
+
+# same process was followed for cis-eqtl data.

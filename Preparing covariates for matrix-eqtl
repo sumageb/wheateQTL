@@ -1,0 +1,32 @@
+# Making covariates
+Based on the scree plot, first 20 pc was selected as covariates. smartpca.evec was the output from pca analysis.
+less smartpca.evec > smartpc_evec.txt
+pca <- read.table("smartpc_evec.txt")
+pca1 <- pca[, -22] (column 22 is not necessary)
+pca1$V1 <- gsub("^\\d+:", "", pca1$V1)
+gsub("^\\d+:", "", df$V1) is used to remove the numeric prefix from the values in the first column (V1).
+The ^\\d+: regular expression matches one or more digits at the beginning of the string followed by a colon,
+and it is replaced with an empty string.
+library("dplyr")
+ # Rename multiple columns
+  pca1<- pca1%>%
+           rename("SampleID"="V1", "PC1"="V2", "PC2"="V3", "PC3"="V4","PC4"="V5","PC5"="V6","PC6"="V7",
+ "PC7"="V8","PC8"="V9","PC9"="V10","PC10"="V11","PC11"="V12","PC12"="V13","PC13"="V14","PC14"="V15","PC15"="V16",
+ "PC16"="V17","PC17"="V18","PC18"="V19","PC19"="V20","PC20"="V21")
+
+library(data.table)
+transpose_data <- transpose(pca1, keep.names = "rn")
+fwrite(transpose_data, file="covariates_smartpc_20.txt", sep = "\t")
+cov <- read.table("covariates_smartpc_20.txt", header=T)
+library(gtools)
+# Extract column names excluding SampleID
+col_names <- colnames(cov)[-1]
+
+# Sort the column names numerically using mixedsort
+sorted_col_names <- mixedsort(col_names)
+
+# Create a new data frame with the columns rearranged
+new_data <- cov[c("SampleID", sorted_col_names)]
+fwrite(new_data, file="covariates.txt", sep = "\t")
+
+# covariates.txt file is used in the matrix-eqtl.

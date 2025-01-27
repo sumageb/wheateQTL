@@ -1,0 +1,38 @@
+# I utilized the original expression matrix and genotype files for permutation by using the script permutation.R to gather the permuted p-values for cis and trans eQTL.
+# Permuted p-values for cis
+f1 <- read.table("perm_alt_cis.txt")
+f1$V1001 (geneid)
+library("dplyr")
+# move geneid to first column
+f1_Sorted = f1 %>% dplyr::select("V1001",
+                          everything())
+library(data.table)
+fwrite(f1_Sorted, file="cis_perm_pvalues.txt",sep="\t")
+
+# Same process was followed for trans
+fwrite(f2_Sorted, file="trans_perm_pvalues.txt",sep="\t")
+
+## Calculate the 5th percentile of the permuted p-values
+library(dplyr)
+cut -f1,2,4 cis_eqtl.txt > modified_cis.txt
+real_data <- read.delim("modified_cis.txt")
+permuted_data <- read.delim("cis_perm_pvalues.txt")
+library(tidyr)
+# Create a new column to match the format of
+real_data <- real_data %>% rename(Geneid = Geneid, P_values=pvalue)
+#Reshape the permuted data into long format
+permuted_data_long <- permuted_data %>%
+  pivot_longer(cols = starts_with("V"), names_to = "permutation", values_to = "permuted_pvalue")
+
+# Group by Geneid, sort p-values, then calculate the 5th percentile threshold for each gene
+thresholds <- permuted_data_long %>%
+    group_by(Geneid) %>%
+    arrange(permuted_pvalue) %>%
+    summarize(threshold = quantile(permuted_pvalue, 0.05))
+
+# Join real data with the thresholds and determine significance
+    results <- real_data %>%
+      left_join(thresholds, by = "Geneid") %>%
+      mutate(significant = P_values < threshold)
+
+# same process was followed for trans data.

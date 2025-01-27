@@ -1,0 +1,93 @@
+## Sorted bam files assembly using stringtie
+We first assembled and merged the transcripts, creating a gtf file for each individual.
+stringtie $file -p 8 -G /project/def-lukens/sdabi/genome/Triticum_aestivum.IWGSC.47.gtf -o ../gtf_files/$basename.gtf
+# Then merged gtf files  in order to generate a non-redundant set of transcripts.
+stringtie --merge -p 8 -G /project/def-lukens/sdabi/genome/Triticum_aestivum.IWGSC.47.gtf -o merged.gtf gtf.txt
+
+Next, we estimated abundance,for each sample, run StringTie in order to estimate transcript abundances and generate
+read coverage tables for Ballgown.
+#!/bin/sh
+for file in *.sorted.bam
+do
+basename=$(echo $file | sed -r 's/md_out\.(w[0-9]+).*/\1/')
+echo $basename
+stringtie $file -p 8 -e -B -G merged.gtf -o ../stringtie_quant/$basename.ballgown/$basename.gtf
+done
+#-e only estimate the abundance of given reference transcripts
+
+## Import StringTie Expression data into IsoformSwitchAnalyzeR
+stringQuant <- importIsoformExpression(parentDir="./",addIsofomIdAsColumn = F, readLength = 150)
+
+# Make design matrix
+myDesign <- data.frame(sampleID = colnames(stringQuant$abundance),condition = gsub('_.*', '', colnames(stringQuant$abundance)))
+
+# Create switchAnalyzeRlist
+aSwitchList <- importRdata(isoformCountMatrix = stringQuant$counts,isoformRepExpression = stringQuant$abundance,designMatrix= myDesi>### gene count matrix
+geneExpresionMatrix <- extractGeneExpression(aSwitchList, extractCounts= T, addGeneNames=T,addIdsAsColumns=F)
+write.csv(geneExpresionMatrix, file = "EM_count.csv")
+finalcount_matrix.txt was the output file after some filtering of the dataset, where rows for genes and columns for samples.
+
+## TMM normalization with edgeR
+em_dge <- DGEList(counts=count_matrix)
+
+## Filtering low-expressed genes
+keep <- filterByExpr(em_dge)
+# Usually a gene is required to have a count of 10 in a library to be
+ considered expressed in that library.
+
+em_filtered <- em_dge[keep, , keep.lib.sizes=FALSE]
+normalized_em <- normLibSizes(em_filtered, method="TMM")
+em_cpm <- cpm(normalized_em,log=TRUE)
+write.csv(em_cpm, file = "normalized_em.csv")
+n_em <- read.csv("normalized_em.csv")
+names(n_em)[names(n_em) == "X"] <- "geneid"
+library(data.table)
+fwrite(n_em, file = "tmm_expression_matrix.txt", sep= "\t")
+
+#Some genes have log2 negative values.Negative log2 CPM values typically indicate genes with very low expression
+levels.
+
+#removing the rows with Negative values
+e_matrix <- read.table("tmm_expression_matrix.txt", header=T)
+e_matrix2 <-e_matrix[rowSums(e_matrix < 0) == 0, ]
+fwrite(e_matrix2, file = "tmm_ematrix_filtered.txt", sep= "\t")
+# This txt file is used in the matrix-eQTL.
+
+#processing the annotation file for matrix-eQTL
+awk '$3 == "gene"' Triticum_aestivum.IWGSC.47.gff3 > filtered_genes.gff3
+
+awk -F'\t' 'BEGIN {OFS="\t"} {split($9, a, "ID="); split(a[2], b, ";"); print $1, $2, $3, $4, $5, $6, $7, $8, b[1]}' filtered.gff3 > extracted_geneids.txt
+
+#The command `-F'\t'` sets the field separator to a tab character, while `BEGIN {OFS="\t"}` ensures that the output maintains this format.
+The expression `{split($9, a, "ID=")}` divides the ninth column (attribute column) at "ID=" and stores the result in array `a`. The subsequent command, `split(a[2], b, ";")`, further breaks down the portion after "ID=" (in `a[2]`) by the semicolon ";" and stores it in array `b`.
+Finally, `print $1, $2, $3, $4, $5, $6, $7, $8, b[1]` prints the first eight columns of the GFF3 record along with the extracted ID from array `b`.
+
+# Removing genes from unknown region
+sed -i '/^Un/d' extracted_geneids.txt
+
+# Remove the gene word from 9th column
+sed 's/gene://g' extracted_geneids.txt > modified.txt
+cut -f9,1,4,5 modified.txt > final_genelist.txt
+
+# Adding header and after rearranged the columns file name is changed to annotated_genes.txt.
+
+## Aligning the processed annotation file with expression data for the preparation of the matrix-eQTL annotation file
+file1 <- read.table("tmm_ematrix_filtered.txt", header=T)
+file2 <- read.table("annotated_genes.txt", header=T)
+f_annofile <- file2[file2$geneid %in% file1$geneid, ]
+#geneid matched in both files are stored.
+fwrite(f_annofile, file="final_annofile_filtered.txt", sep="\t")
+
+# First column of this file used as geneid.txt where all the geneids are stored.
+
+## find  Mean and variance of  expressed genes
+expression_matrix <- read.table("tmm_ematrix_filtered.txt", header=T)
+library(tibble)
+expr_matrix <- expression_matrix %>%
+        column_to_rownames('geneid')
+mean <- rowMeans(expr_matrix)
+variance <- apply(expr_matrix, 1, var)
+
+# Combine the results into a single data frame
+result <- data.frame(Mean = mean,Variance = variance)
+write.table(result, "genes_mean_var.txt", row.names = TRUE, col.names = NA, sep = "\t")
