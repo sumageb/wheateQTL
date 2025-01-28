@@ -1,0 +1,62 @@
+## Sequence versus Expression divergence analysis for all genes
+library(dplyr)
+file1 <- read.table("pi_all_genes.txt", header = TRUE, sep = "\t")
+file2 <- read.table("genes_mean_var.txt", header = TRUE, sep = "\t")
+common_genes <- inner_join(file1, file2, by = "GeneIds")
+com_genes <- common_genes[, c(1,5,7)]
+dim(com_genes)
+[1] 18239     3
+colnames(com_genes) <- c("GeneIds", "Sequence diversity", "Expression diversity")
+write.table(com_genes, file = "all_genes_seq_exp.txt", sep = "\t", row.names = FALSE)
+mod1<-lm(formula = Expression_diversity ~ Sequence_diversity, data=com_genes)
+summary(mod1)
+Call:
+lm(formula = Expression_diversity ~ Sequence_diversity, data = com_genes)
+
+Residuals:
+    Min      1Q  Median      3Q     Max
+-0.2201 -0.0921 -0.0581  0.0100  8.9728
+
+Coefficients:
+                   Estimate Std. Error t value Pr(>|t|)
+(Intercept)        0.128097   0.002387   53.67   <2e-16 ***
+Sequence_diversity 0.222575   0.017863   12.46   <2e-16 ***
+---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+Residual standard error: 0.2236 on 18237 degrees of freedom
+Multiple R-squared:  0.008441,  Adjusted R-squared:  0.008387
+F-statistic: 155.2 on 1 and 18237 DF,  p-value: < 2.2e-16
+
+anova(mod1)
+Analysis of Variance Table
+Response: Expression_diversity
+                      Df Sum Sq Mean Sq F value    Pr(>F)
+Sequence_diversity     1   7.76  7.7623  155.25 < 2.2e-16 ***
+Residuals          18237 911.84  0.0500
+
+# plotting
+ggplot(com_genes, aes(x = Sequence_diversity, y = Expression_diversity)) +
+  geom_point(alpha = 0.5, color = "blue") +
+  geom_smooth(method = "lm", color = "red", se = TRUE) +
+  scale_y_log10() +
+  labs(title = "Relationship Between Sequence & Expression Diversity",
+       x = "Sequence Diversity",
+       y = "Expression Diversity (Log Scale)") +
+  theme_minimal()
+
+#finding for triplets
+triplets <- read.table("triplets_Exp_seq_diversity.txt", header = T)
+triplets$TripletID <- as.factor(triplets$TripletID)
+mod1<-lm(formula = Expression_Diversity ~ Seq_Diversity, data=triplets)
+ggplot(triplets, aes(x = Seq_Diversity, y = Expression_Diversity)) +
+  geom_point(alpha = 0.5, color = "blue") +
+  geom_smooth(method = "lm", color = "red", se = TRUE) +
+  scale_y_log10() +
+  labs(title = "Relationship Between Sequence & Expression Diversity",
+       x = "Sequence Diversity",
+       y = "Expression Diversity (Log Scale)") +
+  theme_minimal()
+
+  # Adding triplet id in the model
+  mod2<-lm(formula = Expression_Diversity ~ TripletID + Seq_Diversity, data=triplets)
