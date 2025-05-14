@@ -1,0 +1,335 @@
+#Checking coregulation
+
+library(dplyr)
+library(tidyr)
+triplets <- read.table("triplets_long.txt", header = TRUE)
+trans_eqtl <- read.table("final_trans_eqtl.txt", header = TRUE)
+
+trans_eqtl <- trans_eqtl[, c(1:7)]
+
+# Remove trans-eQTL SNPs that are on the same chromosome as one of the genes
+filtered_eqtl <- inner_join(trans_eqtl, triplets, by = "GeneIds")
+
+# Create gene pairs within each triplet
+gene_pairs <- triplets %>%
+  group_by(TripletID) %>%
+  summarise(Pairs = list(combn(GeneIds, 2, simplify = FALSE)), .groups = "drop") %>%
+  unnest(Pairs) %>%
+  transmute(TripletID, Gene1 = sapply(Pairs, `[`, 1), Gene2 = sapply(Pairs, `[`, 2))
+
+# Identify shared trans eQTL SNPs for genes in the same triplet
+shared_eqtl <- filtered_eqtl %>%
+  group_by(snps, SNP_chr) %>%
+  summarise(GeneIds = list(unique(GeneIds)), .groups = "drop") %>%
+  filter(lengths(GeneIds) >= 2)  # Keep SNPs shared by at least two genes
+
+# Generate valid gene pairs from shared trans eQTLs
+valid_pairs <- shared_eqtl %>%
+  rowwise() %>%
+  mutate(Pairs = list(as.data.frame(t(combn(GeneIds, 2))))) %>%
+  unnest(cols = c(Pairs)) %>%
+  rename(Gene1 = V1, Gene2 = V2) %>%
+  select(-GeneIds)
+
+# Ensure `Gene1` and `Gene2` are character vectors before merging
+valid_pairs <- valid_pairs %>%
+  mutate(Gene1 = as.character(Gene1), Gene2 = as.character(Gene2))
+
+gene_pairs <- gene_pairs %>%
+  mutate(Gene1 = as.character(Gene1), Gene2 = as.character(Gene2))
+
+# Merge with triplet groups to retain TripletID
+final_output <- valid_pairs %>%
+  inner_join(gene_pairs, by = c("Gene1", "Gene2")) %>%
+  select(TripletID, Gene1, Gene2, snps)
+  dim(final_output)
+  [1] 7087    4
+it has duplicated pairs.
+
+ best_snp_output <- final_output %>%
+   # Join twice, once for each gene in the pair
+   left_join(trans_eqtl %>% select(snps, GeneIds, pvalue) %>% rename(Gene1 = GeneIds, pvalue1 = pvalue), by = c("snps", "Gene1")) %>%
+   left_join(trans_eqtl %>% select(snps, GeneIds, pvalue) %>% rename(Gene2 = GeneIds, pvalue2 = pvalue), by = c("snps", "Gene2")) %>%
+   # Take the maximum p-value for the pair
+   mutate(max_pvalue = pmax(pvalue1, pvalue2, na.rm = TRUE)) %>%
+   # Group by TripletID, Gene Pair, and SNP Chromosome
+   group_by(TripletID, Gene1, Gene2) %>%
+   # Select the best SNP based on the minimum of the maximum p-value
+   filter(max_pvalue == min(max_pvalue, na.rm = TRUE)) %>%
+   ungroup() %>%
+   # Select and keep only the relevant columns
+   select(TripletID, Gene1, Gene2, snps) %>%
+   # Remove duplicates
+   distinct()
+   dim(best_snp_output)
+   [1] 1171    4
+write.table(best_snp_output, "shared_trans_eqtl_filteredfile.txt", sep = "\t", row.names = FALSE)
+
+#check cor
+library(data.table)
+file1 <- fread("correlation_results.txt", header = TRUE, sep = "\t")
+file2 <- fread("shared_trans_eqtl_filteredfile.txt", header = TRUE, sep = "\t")
+
+# Merge the data based on TripletID, Gene1, and Gene2
+merged_data <- merge(file2, file1, by = c("TripletID", "Gene1", "Gene2"), all.x = TRUE)
+dim(merged_data)
+1171    5
+fwrite(merged_data, "trans_pairs_cor.txt", sep = "\t", quote = FALSE, row.names = FALSE)
+
+
+#cis eqtl in homeologous pair
+library(dplyr)
+triplets <- read.table("triplets_long.txt", header = TRUE)
+cis_eqtl <- read.table("ld_filtered_cis.txt", header = TRUE)
+#Extract Chromosome Location from Gene Names
+triplets <- triplets %>%
+  mutate(Gene_Location = substr(GeneIds, 8, 9))
+
+#Match Genes to Their Cis eQTLs
+cis_gene_map <- cis_eqtl %>%
+  select(GeneIds, snps) %>%
+  distinct
+dim(cis_gene_map)
+  [1] 5586    2
+# Select the Best SNP for Each Gene (Based on Lowest p-value)
+best_cis_eqtl <- cis_eqtl %>%
+  group_by(GeneIds) %>%
+  filter(pvalue == min(pvalue, na.rm = TRUE)) %>%  # Selects SNP with lowest p-value
+  ungroup() %>%
+  select(GeneIds, snps) %>%
+  distinct()  # Ensures only one SNP per gene
+dim(best_cis_eqtl)
+  [1] 3074    2
+#Merge Triplets with Their Cis eQtl
+triplet_cis_eqtl <- triplets %>%
+  left_join(best_cis_eqtl, by = "GeneIds") %>%  # Keeps NA if no SNP is found
+  select(TripletID, Gene_Location, GeneIds, snps) %>%
+  arrange(TripletID, Gene_Location)  # Sort by TripletID and location
+
+
+dim(triplet_cis_eqtl)
+  [1] 10098     4
+
+library(tidyr)
+sum(is.na(triplet_cis_eqtl$snps))
+[1] 8812
+#Remove Genes with NA cis-eQTLs
+filtered_triplets <- triplet_cis_eqtl %>%
+  filter(!is.na(snps))  # Removes genes with NA cis-eQTLs
+dim(filtered_triplets)
+1286    4
+
+# Remove Triplets with Fewer Than 2 Genes**
+filtered_triplets <- filtered_triplets %>%
+  group_by(TripletID) %>%
+  filter(n() >= 2) %>%
+  ungroup()
+491   4
+write.table(filtered_triplets, "different_ciseqtl_triplets.txt", sep = "\t", row.names = FALSE, quote = FALSE)
+# Generate Gene Pairs within Each Triplet
+gene_pairs <- filtered_triplets %>%
+  group_by(TripletID) %>%
+  summarise(Pairs = list(combn(GeneIds, 2, simplify = FALSE)), .groups = "drop") %>%
+  unnest(Pairs) %>%
+  transmute(TripletID, Gene1 = sapply(Pairs, `[`, 1), Gene2 = sapply(Pairs, `[`, 2))
+
+dim(gene_pairs)
+301   3
+write.table(gene_pairs, "cis_different_homeo_pairs.txt", sep = "\t", row.names = FALSE, quote = FALSE)
+
+#check cor
+library(dplyr)
+file1 <- read.table("correlation_results.txt", header = TRUE, sep = "\t")
+file2 <- read.table("cis_different_homeo_pairs.txt", header = TRUE, sep = "\t")
+file1 <- file1 %>%
+  mutate(Gene1 = trimws(Gene1),
+         Gene2 = trimws(Gene2),
+         TripletID = as.character(TripletID))
+
+file2 <- file2 %>%
+  mutate(Gene1 = trimws(Gene1),
+         Gene2 = trimws(Gene2),
+         TripletID = as.character(TripletID))
+
+# Create a reversed version of file1 to check for swaps
+file1_rev <- file1 %>%
+  rename(Gene1 = Gene2, Gene2 = Gene1)
+
+# Merge both ways: Original and Reversed
+merged_data <- file2 %>%
+  left_join(file1, by = c("TripletID", "Gene1", "Gene2")) %>%
+  left_join(file1_rev, by = c("TripletID", "Gene1", "Gene2"), suffix = c("", "_rev")) %>%
+  mutate(Correlation = coalesce(Correlation, Correlation_rev)) %>% # Take first non-NA correlation
+  select(TripletID, Gene1, Gene2, Correlation) %>% # Keep only relevant columns
+  distinct()  # Remove duplicates
+fwrite(merged_data, "cis_pairs_cor.txt", sep = "\t", quote = FALSE, row.names = FALSE)
+
+
+#Finding number of triplet in cis and trans file
+cut -d$'\t' -f2 ld_filtered_cis.txt |sort | uniq > cis_genesid.txt
+cut -d$'\t' -f2 final_trans_eqtl.txt | sort | uniq > trans_genesid.txt
+Among the cis-eqtl file 3074 genes are unique and 6655 genes are unique in trans file.
+f1 <- read.table("triplets_long.txt", header=T)
+f2 <- read.table("cis_genesid.txt", header=T)
+f3 <- read.table("trans_genesid.txt", header=T)
+> f1$is_cis <- f1$GeneIds %in% f2$GeneIds
+> f1$is_trans <- f1$GeneIds %in% f3$GeneIds
+# Check the number of rows where both are FALSE
+table(f1$is_cis == FALSE & f1$is_trans == FALSE)
+#4418 triplet genes have either is_cis or is_trans (or both) as TRUE. 5680 triplets genes have both is_cis and is_trans as FALSE.
+table(f1$is_cis == TRUE)
+FALSE  TRUE
+ 8812  1286
+#1286 triplets has cis-eqtl
+table(f1$is_trans == TRUE)
+FALSE  TRUE
+ 6373  3725
+#3725 triplets has trans information.
+table(f1$is_cis == TRUE & f1$is_trans == TRUE)
+FALSE  TRUE
+ 9505   593
+#593 genes has both cis and trans information.
+write.table(f1, "triplet_with_cis_trans.txt", row.names = FALSE, sep = "\t", quote = FALSE)
+library(dplyr)
+data <- read.table("triplet_with_cis_trans.txt", header=T)
+
+# Filter out genes with no eQTL (both is_cis and is_trans are FALSE)
+filtered_data <- data %>%
+  filter(is_cis | is_trans)
+#If both is_cis and is_trans are FALSE for a row, that row is removed (i.e., genes with no eQTL are excluded
+dim(filtered_data)
+[1] 4418    5
+
+# Summarize counts of regulation types per TripletID
+summary_table <- filtered_data %>%
+  group_by(TripletID) %>%
+  summarise(
+    cis_regulated = sum(is_cis & !is_trans),
+    trans_regulated = sum(!is_cis & is_trans),
+    both_regulated = sum(is_cis & is_trans), #both means true for both eqtl
+    total_genes_with_eqtl = n()
+  )
+
+  # Identify cases where only one gene is regulated by cis or trans, while the other two follow a different pattern
+  single_cis_trans <- filtered_data %>%
+    group_by(TripletID) %>%
+    summarise(
+      only_one_cis = sum(is_cis & !is_trans) == 1 & sum(is_trans) == 0,
+      only_one_trans = sum(!is_cis & is_trans) == 1 & sum(is_cis) == 0
+    )
+
+# Identify cases where all three copies are regulated by cis-only or trans-only
+    all_cis_trans <- filtered_data %>%
+      group_by(TripletID) %>%
+      summarise(
+        all_three_cis = sum(is_cis & !is_trans) == 3,
+        all_three_trans = sum(!is_cis & is_trans) == 3
+      )
+
+# Merge all summaries into one final table
+final_summary <- summary_table %>%
+        left_join(single_cis_trans, by = "TripletID") %>%
+        left_join(all_cis_trans, by = "TripletID") %>%
+        mutate(
+          only_one_cis = ifelse(is.na(only_one_cis), FALSE, only_one_cis),
+          only_one_trans = ifelse(is.na(only_one_trans), FALSE, only_one_trans),
+          all_three_cis = ifelse(is.na(all_three_cis), FALSE, all_three_cis),
+          all_three_trans = ifelse(is.na(all_three_trans), FALSE, all_three_trans)
+        )
+fwrite(final_summary, "summary_table_cistrans_regulation.txt", sep="\t")
+
+
+#genes with no eqtl
+no_cis_trans <- f1[!f1$is_cis & !f1$is_trans, c("TripletID", "GeneIds")]
+> dim(no_cis_trans)
+[1] 5680    2
+write.table(f1, "no_triplet_with_cis_trans.txt", row.names = FALSE, sep = "\t", quote = FALSE)
+
+#making pairs from noeqtl genes
+no_cis_trans <- read.table("no_triplet_with_cis_trans.txt", header = TRUE)
+library(tidyr)
+grouped_genes <- no_cis_trans %>%
+  group_by(TripletID) %>%
+  summarize(GeneList = list(GeneIds))
+
+valid_triplets <- grouped_genes %>%
+    filter(lengths(GeneList) >= 2)
+
+make_pairs <- function(genes) {
+      # Generate all pairs
+      pairs <- t(combn(genes, 2))
+      # Convert to data frame
+      data.frame(Gene1 = pairs[,1], Gene2 = pairs[,2])
+    }
+# Apply pairing function to each TripletID
+paired_genes <- valid_triplets %>%
+      rowwise() %>%
+      mutate(Pairs = list(make_pairs(GeneList))) %>%
+      unnest(cols = c(Pairs))
+
+fwrite(paired_genes, "triplets_pairs_noeqtl.txt", sep="\t")
+cut -f1,3,4 triplets_pairs_noeqtl.txt > triplets_pairs_no_eqtl.txt
+
+# Count TripletID occurrences and filter for those appearing exactly three times
+awk '{print $1}' triplets_pairs_no_eqtl.txt | sort | uniq -c | awk '$1 == 3' | wc -l
+1069 triplet sets do not have any eqtl.
+
+#check cor for no eqtl pairs
+library(data.table)
+file1 <- fread("correlation_results.txt", header = TRUE, sep = "\t")
+file2 <- fread("triplets_pairs_no_eqtl.txt", header = TRUE, sep = "\t")
+
+# Merge the data based on TripletID, Gene1, and Gene2
+merged_data <- merge(file2, file1, by = c("TripletID", "Gene1", "Gene2"), all.x = TRUE)
+dim(merged_data)
+4115    4
+fwrite(merged_data, "pairs_noeqtl_cor.txt", sep = "\t", quote = FALSE, row.names = FALSE)
+
+
+#We also expect situations in which only one gene has a cis eQTL out of three triplet genes.
+library(dplyr)
+cis_trans <- read.table("triplet_with_cis_trans.txt", header=T)
+# Check for triplets where only one gene is cis
+only_one_cis_triplets <- cis_trans %>%
+  group_by(TripletID) %>%
+  summarise(cis_count = sum(is_cis)) %>%
+  filter(cis_count == 1) %>%
+  pull(TripletID)
+
+#  Extract the full triplets for those IDs
+full_triplets <- cis_trans %>%
+  filter(TripletID %in% only_one_cis_triplets) %>%
+  arrange(TripletID)
+fwrite(full_triplets, "onegene_cis.txt", sep = "\t")
+
+#pairing for cor
+only_cis <- read.table("onegene_cis.txt", header=T)
+library(tidyr)
+grouped_genes <- only_cis %>%
+  group_by(TripletID) %>%
+  summarize(GeneList = list(GeneIds))
+
+make_pairs <- function(genes) {
+      # Generate all pairs
+      pairs <- t(combn(genes, 2))
+      # Convert to data frame
+      data.frame(Gene1 = pairs[,1], Gene2 = pairs[,2])
+    }
+# Apply pairing function to each TripletID
+paired_genes <- grouped_genes %>%
+      rowwise() %>%
+      mutate(Pairs = list(make_pairs(GeneList))) %>%
+      unnest(cols = c(Pairs))
+dim(paired_genes)
+[1] 2385    4
+fwrite(paired_genes, "paired_genes_only_onecis.txt", sep = "\t")
+cut -f1,3,4 paired_genes_only_onecis.txt > only_onecis_pairs.txt
+#checking cor
+file1 <- fread("correlation_results.txt", header = TRUE, sep = "\t")
+file2 <- fread("only_onecis_pairs.txt", header = TRUE, sep = "\t")
+
+# Merge the data based on TripletID, Gene1, and Gene2
+merged_data <- merge(file2, file1, by = c("TripletID", "Gene1", "Gene2"), all.x = TRUE)
+dim(merged_data)
+ 2385    4
+fwrite(merged_data, "pairs_only_onecis_cor.txt", sep = "\t")
